@@ -597,9 +597,9 @@ pre,
 
 .board-form-panel {
 	display: grid;
-	grid-template-columns: minmax(0, 1fr);
+	grid-template-columns: minmax(11rem, 0.8fr) minmax(11rem, 0.8fr) minmax(16rem, 1.2fr);
 	gap: 0.9rem;
-	align-items: start;
+	align-items: end;
 	min-width: 0;
 	padding: 0;
 }
@@ -669,6 +669,10 @@ pre,
 .board-field-wide,
 .board-actions {
 	grid-column: 1 / -1;
+}
+
+.board-form-panel .board-field-wide {
+	grid-column: auto;
 }
 
 .board-actions {
@@ -893,6 +897,11 @@ pre,
 		border-top: 1px solid var(--board-line);
 		padding-left: 0;
 		padding-top: 1rem;
+	}
+
+	.board-form-panel .board-field-wide,
+	.board-form-panel .board-actions {
+		grid-column: 1 / -1;
 	}
 
 	.card-form {
