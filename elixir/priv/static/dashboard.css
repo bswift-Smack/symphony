@@ -564,6 +564,8 @@ pre,
 .board-control-panel,
 .quick-card-panel,
 .board-stage {
+	max-width: 100%;
+	overflow: hidden;
 	border: 1px solid rgba(184, 199, 216, 0.76);
 	border-radius: 12px;
 	background: var(--board-surface);
@@ -597,9 +599,12 @@ pre,
 
 .board-form-panel {
 	display: grid;
-	grid-template-columns: minmax(11rem, 0.8fr) minmax(11rem, 0.8fr) minmax(16rem, 1.2fr);
+	grid-template-columns: repeat(2, minmax(0, 1fr));
 	gap: 0.9rem;
 	align-items: end;
+	width: 100%;
+	max-width: 100%;
+	overflow: hidden;
 	min-width: 0;
 	padding: 0;
 }
