@@ -482,7 +482,7 @@ pre,
 
 .board-hero .hero-grid {
 	position: relative;
-	grid-template-columns: minmax(0, 1fr) minmax(19rem, 24rem);
+	grid-template-columns: minmax(0, 1fr);
 	align-items: stretch;
 }
 
@@ -494,12 +494,15 @@ pre,
 
 .board-hero-copy {
 	align-self: center;
+	min-width: 0;
 }
 
 .board-hero-panel {
 	display: grid;
 	gap: 0.85rem;
 	align-content: start;
+	min-width: 0;
+	max-width: 100%;
 	border: 1px solid rgba(184, 199, 216, 0.72);
 	border-radius: 8px;
 	background: rgba(255, 255, 255, 0.78);
@@ -525,6 +528,7 @@ pre,
 
 .board-meta-list {
 	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
 	gap: 0.65rem;
 	margin: 0;
 }
@@ -587,8 +591,9 @@ pre,
 
 .project-editor-grid {
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	grid-template-columns: minmax(0, 1fr);
 	gap: 1rem;
+	min-width: 0;
 }
 
 .board-form-panel {
@@ -596,12 +601,13 @@ pre,
 	grid-template-columns: repeat(2, minmax(0, 1fr));
 	gap: 0.9rem;
 	align-items: start;
+	min-width: 0;
 	padding: 0;
 }
 
 .board-form-panel + .board-form-panel {
-	border-left: 1px solid var(--board-line);
-	padding-left: 1rem;
+	border-top: 1px solid var(--board-line);
+	padding-top: 1rem;
 }
 
 .board-form-panel-muted {
@@ -639,6 +645,7 @@ pre,
 .board-field textarea,
 .board-field select {
 	width: 100%;
+	min-width: 0;
 	min-height: 2.7rem;
 	border: 1px solid var(--board-line-strong);
 	border-radius: 8px;
@@ -696,16 +703,17 @@ pre,
 
 .quick-card-panel {
 	display: grid;
-	grid-template-columns: minmax(12rem, 0.35fr) minmax(0, 1fr);
+	grid-template-columns: minmax(0, 1fr);
 	gap: 1rem;
 	align-items: end;
 }
 
 .card-form {
 	display: grid;
-	grid-template-columns: minmax(14rem, 0.75fr) minmax(18rem, 1fr) auto;
+	grid-template-columns: minmax(12rem, 0.75fr) minmax(16rem, 1fr) auto;
 	gap: 0.85rem;
 	align-items: end;
+	min-width: 0;
 }
 
 .board-error {
