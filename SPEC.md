@@ -328,6 +328,7 @@ Returned workflow object:
 Top-level keys:
 
 - `tracker`
+- `project`
 - `polling`
 - `workspace`
 - `hooks`
@@ -358,10 +359,39 @@ Fields:
   - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
 - `project_slug` (string)
   - REQUIRED for dispatch when `tracker.kind == "linear"`.
+  - Linear-specific project filter. It is not the primary project-routing model for local boards.
 - `active_states` (list of strings)
   - Default: `Todo`, `In Progress`
 - `terminal_states` (list of strings)
   - Default: `Closed`, `Cancelled`, `Canceled`, `Duplicate`, `Done`
+
+`local_board` tracker extension:
+
+- Purpose: support a local-board pilot where one board represents one project/repository scope.
+- `tracker.kind` (string)
+  - Extension value: `local_board`
+- `tracker.board_slug` (string)
+  - REQUIRED when `tracker.kind == "local_board"`.
+  - Stable board identity and the project board slug used in logs, state, URLs, and storage.
+
+Recommended project config for `local_board`:
+
+- `project.slug` (string)
+  - Stable project identity owned by the board config.
+- `project.name` (string)
+  - Human-readable project name.
+- `project.repo.directory` (path string or `$VAR`, OPTIONAL)
+  - Existing local repository directory to lock work to.
+- `project.repo.url` (string, OPTIONAL)
+  - Repository URL to clone/populate when a local directory is not provided.
+- `project.workspace_root` (path string or `$VAR`)
+  - Intentional root for this project's per-card workspaces.
+
+Board-per-project is the RECOMMENDED safe model for local boards. It keeps project scope in trusted
+board/project configuration, lets the orchestrator lock all card work to the configured repository
+or workspace root, and keeps individual cards simple. A card-level `project_slug` MAY be added later
+for a global intake board that routes cards into project boards, but it SHOULD NOT be the primary
+model for the local-board pilot.
 
 #### 5.3.2 `polling` (object)
 
@@ -562,6 +592,7 @@ Validation checks:
 - `tracker.kind` is present and supported.
 - `tracker.api_key` is present after `$` resolution.
 - `tracker.project_slug` is present when REQUIRED by the selected tracker kind.
+- `tracker.board_slug` and project scope are present when REQUIRED by the selected tracker extension.
 - `codex.command` is present and non-empty.
 
 ### 6.4 Core Config Fields Summary (Cheat Sheet)
@@ -576,6 +607,12 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear`
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
+- `tracker.board_slug`: string, REQUIRED when `tracker.kind=local_board` extension is implemented
+- `project.slug`: string, REQUIRED when `tracker.kind=local_board` extension is implemented
+- `project.name`: string, REQUIRED when `tracker.kind=local_board` extension is implemented
+- `project.repo.directory`: path resolved to absolute, OPTIONAL local-board project lock
+- `project.repo.url`: string, OPTIONAL local-board repository source
+- `project.workspace_root`: path resolved to absolute, REQUIRED local-board workspace intent
 - `polling.interval_ms`: integer, default `30000`
 - `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
 - `hooks.after_create`: shell script or null
@@ -1137,7 +1174,7 @@ Note:
 An implementation MUST support these tracker adapter operations:
 
 1. `fetch_candidate_issues()`
-   - Return issues in configured active states for a configured project.
+   - Return issues in configured active states for a configured tracker/project scope.
 
 2. `fetch_issues_by_states(state_names)`
    - Used for startup terminal cleanup.
@@ -1185,6 +1222,8 @@ RECOMMENDED error categories:
 - `unsupported_tracker_kind`
 - `missing_tracker_api_key`
 - `missing_tracker_project_slug`
+- `missing_tracker_board_slug`
+- `missing_project_config`
 - `linear_api_request` (transport failures)
 - `linear_api_status` (non-200 HTTP)
 - `linear_graphql_errors`
@@ -1667,6 +1706,8 @@ Possible hardening measures include:
   dispatch so untrusted or out-of-scope tasks do not automatically reach the agent.
 - Narrowing the `linear_graphql` tool so it can only read or mutate data inside the
   intended project scope, rather than exposing general workspace-wide tracker access.
+- For local boards, using one board per project and locking that board's work to the configured
+  repository directory or workspace root instead of trusting per-card project routing fields.
 - Reducing the set of client-side tools, credentials, filesystem paths, and network destinations
   available to the agent to the minimum needed for the workflow.
 
@@ -2092,6 +2133,8 @@ Use the same validation profiles as Section 17:
   exposes the baseline endpoints/error semantics in Section 13.7 if shipped.
 - `linear_graphql` client-side tool extension exposes raw Linear GraphQL access through the
   app-server session using configured Symphony auth.
+- `local_board` tracker extension uses one `board_slug` per project and a board-owned `project`
+  config block to lock card execution to the intended repository/workspace.
 - TODO: Persist retry queue and session metadata across process restarts.
 - TODO: Make observability settings configurable in workflow front matter without prescribing UI
   implementation details.

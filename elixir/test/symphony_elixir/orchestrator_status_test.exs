@@ -1,6 +1,121 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
+  defmodule MultiProjectLocalBoardStore do
+    @spec list_projects(keyword()) :: {:ok, [map()]}
+    def list_projects(_opts), do: {:ok, SymphonyElixir.Config.enabled_projects()}
+
+    @spec fetch_candidate_issues(keyword()) :: {:ok, [SymphonyElixir.Linear.Issue.t()]}
+    def fetch_candidate_issues(opts), do: fetch_issues_by_states(["Ready", "Rework"], opts)
+
+    @spec fetch_issues_by_states([String.t()], keyword()) :: {:ok, [SymphonyElixir.Linear.Issue.t()]}
+    def fetch_issues_by_states(states, opts) do
+      board_slug = Keyword.fetch!(opts, :board_slug)
+      project = Keyword.fetch!(opts, :project)
+      send_event({:fetch_issues_by_states, board_slug, project})
+
+      issue =
+        %SymphonyElixir.Linear.Issue{
+          id: "card-#{board_slug}",
+          identifier: "#{String.upcase(board_slug)}-1",
+          title: "Work for #{board_slug}",
+          state: List.first(states)
+        }
+        |> Map.put(:project, project)
+
+      {:ok, [issue]}
+    end
+
+    @spec fetch_issue_states_by_ids([String.t()], keyword()) :: {:ok, [SymphonyElixir.Linear.Issue.t()]}
+    def fetch_issue_states_by_ids(_issue_ids, _opts), do: {:ok, []}
+
+    defp send_event(message) do
+      case Application.get_env(:symphony_elixir, :multi_project_local_board_recipient) do
+        pid when is_pid(pid) -> send(pid, message)
+        _ -> :ok
+      end
+    end
+  end
+
+  test "local board candidate polling reads Ready and Rework cards from every enabled project" do
+    previous_store = Application.get_env(:symphony_elixir, :local_board_store_module)
+
+    Application.put_env(:symphony_elixir, :local_board_store_module, MultiProjectLocalBoardStore)
+    Application.put_env(:symphony_elixir, :multi_project_local_board_recipient, self())
+
+    on_exit(fn ->
+      if is_nil(previous_store) do
+        Application.delete_env(:symphony_elixir, :local_board_store_module)
+      else
+        Application.put_env(:symphony_elixir, :local_board_store_module, previous_store)
+      end
+
+      Application.delete_env(:symphony_elixir, :multi_project_local_board_recipient)
+    end)
+
+    write_multi_project_workflow!(Workflow.workflow_file_path(), [
+      %{slug: "enabled-a", name: "Enabled A", directory: "/tmp/enabled-a", enabled: true},
+      %{slug: "disabled-b", name: "Disabled B", directory: "/tmp/disabled-b", enabled: false},
+      %{slug: "enabled-c", name: "Enabled C", directory: "/tmp/enabled-c"}
+    ])
+
+    assert :ok = Config.validate!()
+    assert {:ok, issues} = SymphonyElixir.Tracker.fetch_candidate_issues()
+
+    assert Enum.map(issues, & &1.id) == ["card-enabled-a", "card-enabled-c"]
+    assert Enum.map(issues, &Map.fetch!(&1, :project).slug) == ["enabled-a", "enabled-c"]
+
+    assert_received {:fetch_issues_by_states, "enabled-a", %{slug: "enabled-a", directory: "/tmp/enabled-a"}}
+    refute_received {:fetch_issues_by_states, "disabled-b", _project}
+    assert_received {:fetch_issues_by_states, "enabled-c", %{slug: "enabled-c", directory: "/tmp/enabled-c"}}
+  end
+
+  test "prompt rendering and workspace paths use the card project instead of the selected project" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-card-project-workspace-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        project_slug: "selected-project",
+        project_name: "Selected Project",
+        project_directory: "/tmp/selected-project",
+        prompt: "Project {{ project.slug }} uses {{ project.directory }} for {{ issue.identifier }}."
+      )
+
+      card_project = %{
+        slug: "card-project",
+        name: "Card Project",
+        directory: "/tmp/card-project"
+      }
+
+      issue =
+        %Issue{
+          id: "card-project-issue",
+          identifier: "CARD/99",
+          title: "Use card project context",
+          state: "Ready"
+        }
+        |> Map.put(:project, card_project)
+
+      assert PromptBuilder.build_prompt(issue) ==
+               "Project card-project uses /tmp/card-project for CARD/99."
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+
+      assert {:ok, expected_workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "card-project", "CARD_99"]))
+
+      assert workspace == expected_workspace
+      assert File.dir?(workspace)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -971,7 +1086,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute rendered =~ "Timestamp:"
   end
 
-  test "status dashboard renders linear project link in header" do
+  test "status dashboard renders linear project link and default dashboard url in header" do
     snapshot_data =
       {:ok,
        %{
@@ -984,7 +1099,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
 
     assert rendered =~ "https://linear.app/project/project/issues"
-    refute rendered =~ "Dashboard:"
+    assert rendered =~ "Dashboard:"
+    assert rendered =~ "http://127.0.0.1:4301/"
   end
 
   test "status dashboard renders dashboard url on its own line when server port is configured" do
@@ -1600,5 +1716,39 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       {next_tokens, [{timestamp, next_tokens} | acc]}
     end)
     |> elem(1)
+  end
+
+  defp write_multi_project_workflow!(path, projects) when is_binary(path) and is_list(projects) do
+    project_yaml =
+      Enum.map_join(projects, "\n", fn project ->
+        [
+          "  - slug: \"#{project.slug}\"",
+          "    name: \"#{project.name}\"",
+          "    directory: \"#{project.directory}\"",
+          Map.has_key?(project, :enabled) && "    enabled: #{project.enabled}"
+        ]
+        |> Enum.reject(&(&1 in [nil, false]))
+        |> Enum.join("\n")
+      end)
+
+    File.write!(path, """
+    ---
+    tracker:
+      kind: local_board
+      database_url: "postgres://postgres:postgres@localhost:5431/symphony_board_test"
+      active_states: ["Ready", "Rework"]
+      terminal_states: ["Done", "Cancelled"]
+    project:
+      slug: "enabled-a"
+      name: "Enabled A"
+      directory: "/tmp/enabled-a"
+    projects:
+    #{project_yaml}
+    ---
+    Project {{ project.slug }} handles {{ issue.identifier }}.
+    """)
+
+    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+    :ok
   end
 end

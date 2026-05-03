@@ -97,6 +97,12 @@ defmodule SymphonyElixir.TestSupport do
           tracker_api_token: "token",
           tracker_project_slug: "project",
           tracker_assignee: nil,
+          tracker_database_url: nil,
+          tracker_board_slug: nil,
+          project_slug: nil,
+          project_name: nil,
+          project_directory: nil,
+          project_repo_url: nil,
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
@@ -134,6 +140,12 @@ defmodule SymphonyElixir.TestSupport do
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
+    tracker_database_url = Keyword.get(config, :tracker_database_url)
+    tracker_board_slug = Keyword.get(config, :tracker_board_slug)
+    project_slug = Keyword.get(config, :project_slug)
+    project_name = Keyword.get(config, :project_name)
+    project_directory = Keyword.get(config, :project_directory)
+    project_repo_url = Keyword.get(config, :project_repo_url)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
@@ -172,8 +184,11 @@ defmodule SymphonyElixir.TestSupport do
         "  api_key: #{yaml_value(tracker_api_token)}",
         "  project_slug: #{yaml_value(tracker_project_slug)}",
         "  assignee: #{yaml_value(tracker_assignee)}",
+        "  database_url: #{yaml_value(tracker_database_url)}",
+        "  board_slug: #{yaml_value(tracker_board_slug)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
+        project_yaml(project_slug, project_name, project_directory, project_repo_url),
         "polling:",
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
         "workspace:",
@@ -250,6 +265,20 @@ defmodule SymphonyElixir.TestSupport do
       ssh_hosts not in [nil, []] && "  ssh_hosts: #{yaml_value(ssh_hosts)}",
       !is_nil(max_concurrent_agents_per_host) &&
         "  max_concurrent_agents_per_host: #{yaml_value(max_concurrent_agents_per_host)}"
+    ]
+    |> Enum.reject(&(&1 in [nil, false]))
+    |> Enum.join("\n")
+  end
+
+  defp project_yaml(nil, nil, nil, nil), do: nil
+
+  defp project_yaml(slug, name, directory, repo_url) do
+    [
+      "project:",
+      slug && "  slug: #{yaml_value(slug)}",
+      name && "  name: #{yaml_value(name)}",
+      directory && "  directory: #{yaml_value(directory)}",
+      repo_url && "  repo_url: #{yaml_value(repo_url)}"
     ]
     |> Enum.reject(&(&1 in [nil, false]))
     |> Enum.join("\n")

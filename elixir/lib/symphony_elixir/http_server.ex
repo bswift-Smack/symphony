@@ -18,6 +18,14 @@ defmodule SymphonyElixir.HttpServer do
 
   @spec start_link(keyword()) :: GenServer.on_start() | :ignore
   def start_link(opts \\ []) do
+    if opts == [] and Application.get_env(:symphony_elixir, :disable_default_http_server, false) do
+      :ignore
+    else
+      do_start_link(opts)
+    end
+  end
+
+  defp do_start_link(opts) do
     case Keyword.get(opts, :port, Config.server_port()) do
       port when is_integer(port) and port >= 0 ->
         host = Keyword.get(opts, :host, Config.settings!().server.host)

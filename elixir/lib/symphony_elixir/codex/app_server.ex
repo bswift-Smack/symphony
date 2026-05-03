@@ -27,7 +27,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   @spec run(Path.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(workspace, prompt, issue, opts \\ []) do
-    with {:ok, session} <- start_session(workspace, opts) do
+    with {:ok, session} <- start_session(workspace, Keyword.put_new(opts, :issue, issue)) do
       try do
         run_turn(session, prompt, issue, opts)
       after
@@ -40,7 +40,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
 
-    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
+    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host, opts),
          {:ok, port} <- start_port(expanded_workspace, worker_host) do
       metadata = port_metadata(port, worker_host)
 
@@ -144,35 +144,19 @@ defmodule SymphonyElixir.Codex.AppServer do
     stop_port(port)
   end
 
-  defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
+  defp validate_workspace_cwd(workspace, nil, opts) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
-    expanded_root = Path.expand(Config.settings!().workspace.root)
-    expanded_root_prefix = expanded_root <> "/"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
-         {:ok, canonical_root} <- PathSafety.canonicalize(expanded_root) do
-      canonical_root_prefix = canonical_root <> "/"
-
-      cond do
-        canonical_workspace == canonical_root ->
-          {:error, {:invalid_workspace_cwd, :workspace_root, canonical_workspace}}
-
-        String.starts_with?(canonical_workspace <> "/", canonical_root_prefix) ->
-          {:ok, canonical_workspace}
-
-        String.starts_with?(expanded_workspace <> "/", expanded_root_prefix) ->
-          {:error, {:invalid_workspace_cwd, :symlink_escape, expanded_workspace, canonical_root}}
-
-        true ->
-          {:error, {:invalid_workspace_cwd, :outside_workspace_root, canonical_workspace, canonical_root}}
-      end
+         {:ok, allowed_roots} <- allowed_workspace_roots(opts) do
+      validate_workspace_against_roots(canonical_workspace, expanded_workspace, allowed_roots)
     else
       {:error, {:path_canonicalize_failed, path, reason}} ->
         {:error, {:invalid_workspace_cwd, :path_unreadable, path, reason}}
     end
   end
 
-  defp validate_workspace_cwd(workspace, worker_host)
+  defp validate_workspace_cwd(workspace, worker_host, _opts)
        when is_binary(workspace) and is_binary(worker_host) do
     cond do
       String.trim(workspace) == "" ->
@@ -185,6 +169,63 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:ok, workspace}
     end
   end
+
+  defp allowed_workspace_roots(opts) do
+    roots =
+      [Config.settings!().workspace.root, issue_project_workspace_root(Keyword.get(opts, :issue))]
+      |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+      |> Enum.uniq()
+
+    Enum.reduce_while(roots, {:ok, []}, fn root, {:ok, acc} ->
+      expanded_root = Path.expand(root)
+
+      case PathSafety.canonicalize(expanded_root) do
+        {:ok, canonical_root} ->
+          {:cont, {:ok, acc ++ [%{expanded: expanded_root, canonical: canonical_root}]}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp validate_workspace_against_roots(canonical_workspace, expanded_workspace, [primary_root | _] = roots) do
+    cond do
+      Enum.any?(roots, &(canonical_workspace == &1.canonical)) ->
+        {:error, {:invalid_workspace_cwd, :workspace_root, canonical_workspace}}
+
+      Enum.any?(roots, &path_under_root?(canonical_workspace, &1.canonical)) ->
+        {:ok, canonical_workspace}
+
+      escaped_root = Enum.find(roots, &path_under_root?(expanded_workspace, &1.expanded)) ->
+        {:error, {:invalid_workspace_cwd, :symlink_escape, expanded_workspace, escaped_root.canonical}}
+
+      true ->
+        {:error, {:invalid_workspace_cwd, :outside_workspace_root, canonical_workspace, primary_root.canonical}}
+    end
+  end
+
+  defp validate_workspace_against_roots(canonical_workspace, _expanded_workspace, []) do
+    {:error, {:invalid_workspace_cwd, :outside_workspace_root, canonical_workspace, nil}}
+  end
+
+  defp path_under_root?(path, root) when is_binary(path) and is_binary(root) do
+    String.starts_with?(path <> "/", root <> "/")
+  end
+
+  defp issue_project_workspace_root(%{project: project}), do: project_workspace_root(project)
+  defp issue_project_workspace_root(%{"project" => project}), do: project_workspace_root(project)
+  defp issue_project_workspace_root(_issue), do: nil
+
+  defp project_workspace_root(%{workspace_root: workspace_root})
+       when is_binary(workspace_root) and workspace_root != "",
+       do: workspace_root
+
+  defp project_workspace_root(%{"workspace_root" => workspace_root})
+       when is_binary(workspace_root) and workspace_root != "",
+       do: workspace_root
+
+  defp project_workspace_root(_project), do: nil
 
   defp start_port(workspace, nil) do
     executable = System.find_executable("bash")

@@ -39,6 +39,79 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server accepts card project workspace roots and still rejects unrelated local paths" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-project-cwd-guard-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      global_workspace_root = Path.join(test_root, "global-workspaces")
+      project_workspace_root = Path.join(test_root, "project-workspaces")
+      project_workspace = Path.join([project_workspace_root, "card-project", "MT-1002"])
+      unrelated_workspace = Path.join(test_root, "unrelated-workspaces/MT-1002")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(global_workspace_root)
+      File.mkdir_p!(project_workspace)
+      File.mkdir_p!(unrelated_workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-project-root"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-project-root"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: global_workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-project-workspace-guard",
+        identifier: "MT-1002",
+        title: "Validate card project workspace guard",
+        description: "Ensure app-server accepts project workspace roots from card context",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-1002",
+        labels: ["backend"],
+        project: %{slug: "card-project", workspace_root: project_workspace_root}
+      }
+
+      assert {:ok, _result} = AppServer.run(project_workspace, "guard", issue)
+
+      assert {:error, {:invalid_workspace_cwd, :outside_workspace_root, _path, _root}} =
+               AppServer.run(unrelated_workspace, "guard", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server rejects symlink escape cwd paths under the workspace root" do
     test_root =
       Path.join(
@@ -427,19 +500,17 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
 
                  payload["id"] == 2 and
-                   case get_in(payload, ["params", "dynamicTools"]) do
-                     [
-                       %{
-                         "description" => description,
-                         "inputSchema" => %{"required" => ["query"]},
-                         "name" => "linear_graphql"
-                       }
-                     ] ->
+                   Enum.any?(get_in(payload, ["params", "dynamicTools"]) || [], fn
+                     %{
+                       "description" => description,
+                       "inputSchema" => %{"required" => ["query"]},
+                       "name" => "linear_graphql"
+                     } ->
                        description =~ "Linear"
 
                      _ ->
                        false
-                   end
+                   end)
                else
                  false
                end

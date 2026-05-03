@@ -9,16 +9,21 @@ defmodule SymphonyElixir.PromptBuilder do
 
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
+    settings = Config.settings!()
+
     template =
       Workflow.current()
       |> prompt_template!()
       |> parse_template!()
 
+    project = issue_project(issue) || settings.project
+
     template
     |> Solid.render!(
       %{
         "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
+        "issue" => issue |> Map.from_struct() |> to_solid_map(),
+        "project" => project |> struct_to_map() |> to_solid_map()
       },
       @render_opts
     )
@@ -53,6 +58,12 @@ defmodule SymphonyElixir.PromptBuilder do
   defp to_solid_value(value) when is_map(value), do: to_solid_map(value)
   defp to_solid_value(value) when is_list(value), do: Enum.map(value, &to_solid_value/1)
   defp to_solid_value(value), do: value
+
+  defp issue_project(%{project: project}) when is_map(project), do: project
+  defp issue_project(_issue), do: nil
+
+  defp struct_to_map(%_{} = value), do: Map.from_struct(value)
+  defp struct_to_map(value) when is_map(value), do: value
 
   defp default_prompt(prompt) when is_binary(prompt) do
     if String.trim(prompt) == "" do

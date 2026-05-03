@@ -29,7 +29,34 @@ defmodule SymphonyElixirWeb.Layouts do
             if (!window.Phoenix || !window.LiveView) return;
 
             var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
-              params: {_csrf_token: csrfToken}
+              params: {_csrf_token: csrfToken},
+              hooks: {
+                BoardColumn: {
+                  mounted: function () {
+                    this.el.addEventListener("dragover", function (event) {
+                      event.preventDefault();
+                    });
+
+                    this.el.addEventListener("drop", (event) => {
+                      event.preventDefault();
+                      var cardId = event.dataTransfer.getData("text/plain");
+                      if (!cardId) return;
+                      this.pushEvent("move_card", {
+                        card_id: cardId,
+                        state: this.el.dataset.state
+                      });
+                    });
+                  }
+                },
+                BoardCard: {
+                  mounted: function () {
+                    this.el.addEventListener("dragstart", function (event) {
+                      event.dataTransfer.setData("text/plain", event.currentTarget.dataset.cardId);
+                      event.dataTransfer.effectAllowed = "move";
+                    });
+                  }
+                }
+              }
             });
 
             liveSocket.connect();

@@ -17,9 +17,11 @@ defmodule SymphonyElixir.Workspace do
 
     try do
       safe_id = safe_identifier(issue_context.issue_identifier)
+      safe_project_slug = safe_project_slug(issue_context.project_slug)
+      workspace_root = workspace_root(issue_context)
 
-      with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
-           :ok <- validate_workspace_path(workspace, worker_host),
+      with {:ok, workspace} <- workspace_path_for_issue(safe_id, safe_project_slug, workspace_root, worker_host),
+           :ok <- validate_workspace_path(workspace, workspace_root, worker_host),
            {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
         {:ok, workspace}
@@ -89,20 +91,7 @@ defmodule SymphonyElixir.Workspace do
 
   @spec remove(Path.t(), worker_host()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
   def remove(workspace, nil) do
-    case File.exists?(workspace) do
-      true ->
-        case validate_workspace_path(workspace, nil) do
-          :ok ->
-            maybe_run_before_remove_hook(workspace, nil)
-            File.rm_rf(workspace)
-
-          {:error, reason} ->
-            {:error, reason, ""}
-        end
-
-      false ->
-        File.rm_rf(workspace)
-    end
+    remove(workspace, nil, Config.settings!().workspace.root)
   end
 
   def remove(workspace, worker_host) when is_binary(worker_host) do
@@ -127,39 +116,72 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  defp remove(workspace, nil, workspace_root) do
+    case File.exists?(workspace) do
+      true ->
+        case validate_workspace_path(workspace, workspace_root, nil) do
+          :ok ->
+            maybe_run_before_remove_hook(workspace, nil)
+            File.rm_rf(workspace)
+
+          {:error, reason} ->
+            {:error, reason, ""}
+        end
+
+      false ->
+        File.rm_rf(workspace)
+    end
+  end
+
   @spec remove_issue_workspaces(term()) :: :ok
   def remove_issue_workspaces(identifier), do: remove_issue_workspaces(identifier, nil)
 
   @spec remove_issue_workspaces(term(), worker_host()) :: :ok
+  def remove_issue_workspaces(%{identifier: identifier} = issue, worker_host) when is_binary(identifier) do
+    issue_context = issue_context(issue)
+    safe_id = safe_identifier(issue_context.issue_identifier)
+    safe_project_slug = safe_project_slug(issue_context.project_slug)
+    workspace_root = workspace_root(issue_context)
+
+    remove_issue_workspace_path(safe_id, safe_project_slug, workspace_root, worker_host)
+  end
+
   def remove_issue_workspaces(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
     safe_id = safe_identifier(identifier)
 
-    case workspace_path_for_issue(safe_id, worker_host) do
-      {:ok, workspace} -> remove(workspace, worker_host)
-      {:error, _reason} -> :ok
-    end
-
-    :ok
+    remove_issue_workspace_path(safe_id, nil, Config.settings!().workspace.root, worker_host)
   end
 
   def remove_issue_workspaces(identifier, nil) when is_binary(identifier) do
     safe_id = safe_identifier(identifier)
+    remove_issue_workspace_path(safe_id, nil, Config.settings!().workspace.root, nil)
+  end
 
+  def remove_issue_workspaces(_identifier, _worker_host) do
+    :ok
+  end
+
+  defp remove_issue_workspace_path(safe_id, safe_project_slug, workspace_root, nil) do
     case Config.settings!().worker.ssh_hosts do
       [] ->
-        case workspace_path_for_issue(safe_id, nil) do
-          {:ok, workspace} -> remove(workspace, nil)
+        case workspace_path_for_issue(safe_id, safe_project_slug, workspace_root, nil) do
+          {:ok, workspace} -> remove(workspace, nil, workspace_root)
           {:error, _reason} -> :ok
         end
 
       worker_hosts ->
-        Enum.each(worker_hosts, &remove_issue_workspaces(identifier, &1))
+        Enum.each(worker_hosts, &remove_issue_workspace_path(safe_id, safe_project_slug, workspace_root, &1))
     end
 
     :ok
   end
 
-  def remove_issue_workspaces(_identifier, _worker_host) do
+  defp remove_issue_workspace_path(safe_id, safe_project_slug, workspace_root, worker_host) when is_binary(worker_host) do
+    case workspace_path_for_issue(safe_id, safe_project_slug, workspace_root, worker_host) do
+      {:ok, workspace} -> remove(workspace, worker_host)
+      {:error, _reason} -> :ok
+    end
+
     :ok
   end
 
@@ -193,19 +215,33 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp workspace_path_for_issue(safe_id, nil) when is_binary(safe_id) do
-    Config.settings!().workspace.root
-    |> Path.join(safe_id)
+  defp workspace_path_for_issue(safe_id, safe_project_slug, workspace_root, nil) when is_binary(safe_id) do
+    workspace_path_segments(workspace_root, safe_id, safe_project_slug)
     |> PathSafety.canonicalize()
   end
 
-  defp workspace_path_for_issue(safe_id, worker_host) when is_binary(safe_id) and is_binary(worker_host) do
-    {:ok, Path.join(Config.settings!().workspace.root, safe_id)}
+  defp workspace_path_for_issue(safe_id, safe_project_slug, workspace_root, worker_host)
+       when is_binary(safe_id) and is_binary(worker_host) do
+    {:ok, workspace_path_segments(workspace_root, safe_id, safe_project_slug)}
   end
 
   defp safe_identifier(identifier) do
     String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
   end
+
+  defp safe_project_slug(nil), do: nil
+
+  defp safe_project_slug(project_slug) when is_binary(project_slug) do
+    case safe_identifier(project_slug) do
+      "" -> nil
+      safe_slug -> safe_slug
+    end
+  end
+
+  defp safe_project_slug(_project_slug), do: nil
+
+  defp workspace_path_segments(workspace_root, safe_id, nil), do: Path.join(workspace_root, safe_id)
+  defp workspace_path_segments(workspace_root, safe_id, safe_project_slug), do: Path.join([workspace_root, safe_project_slug, safe_id])
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
     hooks = Config.settings!().hooks
@@ -355,9 +391,9 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp validate_workspace_path(workspace, nil) when is_binary(workspace) do
+  defp validate_workspace_path(workspace, workspace_root, nil) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
-    expanded_root = Path.expand(Config.settings!().workspace.root)
+    expanded_root = Path.expand(workspace_root)
     expanded_root_prefix = expanded_root <> "/"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
@@ -383,7 +419,7 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp validate_workspace_path(workspace, worker_host)
+  defp validate_workspace_path(workspace, _workspace_root, worker_host)
        when is_binary(workspace) and is_binary(worker_host) do
     cond do
       String.trim(workspace) == "" ->
@@ -456,26 +492,54 @@ defmodule SymphonyElixir.Workspace do
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
-  defp issue_context(%{id: issue_id, identifier: identifier}) do
+  defp issue_context(%{id: issue_id, identifier: identifier} = issue) do
+    project = Map.get(issue, :project)
+
     %{
       issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_identifier: identifier || "issue",
+      project_slug: project_slug_from_issue_project(project),
+      workspace_root: workspace_root_from_issue_project(project)
     }
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
     %{
       issue_id: nil,
-      issue_identifier: identifier
+      issue_identifier: identifier,
+      project_slug: nil,
+      workspace_root: nil
     }
   end
 
   defp issue_context(_identifier) do
     %{
       issue_id: nil,
-      issue_identifier: "issue"
+      issue_identifier: "issue",
+      project_slug: nil,
+      workspace_root: nil
     }
   end
+
+  defp workspace_root(%{workspace_root: workspace_root}) when is_binary(workspace_root) and workspace_root != "" do
+    workspace_root
+  end
+
+  defp workspace_root(_issue_context), do: Config.settings!().workspace.root
+
+  defp project_slug_from_issue_project(%{slug: slug}) when is_binary(slug), do: slug
+  defp project_slug_from_issue_project(%{"slug" => slug}) when is_binary(slug), do: slug
+  defp project_slug_from_issue_project(_project), do: nil
+
+  defp workspace_root_from_issue_project(%{workspace_root: workspace_root})
+       when is_binary(workspace_root) and workspace_root != "",
+       do: workspace_root
+
+  defp workspace_root_from_issue_project(%{"workspace_root" => workspace_root})
+       when is_binary(workspace_root) and workspace_root != "",
+       do: workspace_root
+
+  defp workspace_root_from_issue_project(_project), do: nil
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do
     "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"

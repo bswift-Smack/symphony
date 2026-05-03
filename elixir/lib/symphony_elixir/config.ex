@@ -48,6 +48,19 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec enabled_projects() :: [map()]
+  def enabled_projects do
+    settings = settings!()
+
+    case settings.projects do
+      projects when is_list(projects) and projects != [] ->
+        Enum.filter(projects, &project_enabled?/1)
+
+      _ ->
+        [settings.project]
+    end
+  end
+
   @spec max_concurrent_agents_for_state(term()) :: pos_integer()
   def max_concurrent_agents_for_state(state_name) when is_binary(state_name) do
     config = settings!()
@@ -119,7 +132,7 @@ defmodule SymphonyElixir.Config do
       is_nil(settings.tracker.kind) ->
         {:error, :missing_tracker_kind}
 
-      settings.tracker.kind not in ["linear", "memory"] ->
+      settings.tracker.kind not in ["linear", "memory", "local_board"] ->
         {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
 
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
@@ -128,10 +141,64 @@ defmodule SymphonyElixir.Config do
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
         {:error, :missing_linear_project_slug}
 
+      settings.tracker.kind == "local_board" and not is_binary(settings.tracker.database_url) ->
+        {:error, :missing_local_board_database_url}
+
+      settings.tracker.kind == "local_board" and unsafe_present_slug?(settings.tracker.board_slug) ->
+        {:error, {:invalid_local_board_project_slug, settings.tracker.board_slug}}
+
+      settings.tracker.kind == "local_board" and multi_project_local_board?(settings) ->
+        validate_local_board_projects(settings)
+
+      settings.tracker.kind == "local_board" and not present_string?(settings.project.slug) ->
+        {:error, :missing_local_board_project_slug}
+
+      settings.tracker.kind == "local_board" and not Schema.valid_project_slug?(settings.project.slug) ->
+        {:error, {:invalid_local_board_project_slug, settings.project.slug}}
+
+      settings.tracker.kind == "local_board" and not present_string?(settings.project.directory) ->
+        {:error, :missing_local_board_project_directory}
+
+      settings.tracker.kind == "local_board" and settings.tracker.board_slug != settings.project.slug ->
+        {:error, {:local_board_project_slug_mismatch, settings.tracker.board_slug, settings.project.slug}}
+
       true ->
         :ok
     end
   end
+
+  defp multi_project_local_board?(settings) do
+    is_list(settings.projects) and settings.projects != []
+  end
+
+  defp validate_local_board_projects(settings) do
+    enabled_projects = Enum.filter(settings.projects, &project_enabled?/1)
+
+    cond do
+      enabled_projects == [] ->
+        {:error, :missing_local_board_enabled_projects}
+
+      Enum.any?(enabled_projects, &(not present_string?(&1.slug))) ->
+        {:error, :missing_local_board_project_slug}
+
+      invalid_project = Enum.find(enabled_projects, &(not Schema.valid_project_slug?(&1.slug))) ->
+        {:error, {:invalid_local_board_project_slug, invalid_project.slug}}
+
+      Enum.any?(enabled_projects, &(not present_string?(&1.directory))) ->
+        {:error, :missing_local_board_project_directory}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp project_enabled?(%{enabled: false}), do: false
+  defp project_enabled?(_project), do: true
+
+  defp unsafe_present_slug?(value), do: present_string?(value) and not Schema.valid_project_slug?(value)
+
+  defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_string?(_value), do: false
 
   defp format_config_error(reason) do
     case reason do

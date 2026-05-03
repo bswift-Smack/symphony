@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Config.Schema do
   alias SymphonyElixir.PathSafety
 
   @primary_key false
+  @project_slug_pattern ~r/^[A-Za-z0-9][A-Za-z0-9_-]*$/
 
   @type t :: %__MODULE__{}
 
@@ -50,6 +51,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:api_key, :string)
       field(:project_slug, :string)
       field(:assignee, :string)
+      field(:database_url, :string)
+      field(:board_slug, :string, default: "default")
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -59,7 +62,17 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :assignee,
+          :database_url,
+          :board_slug,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
     end
@@ -97,6 +110,29 @@ defmodule SymphonyElixir.Config.Schema do
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:root], empty_values: [])
+    end
+  end
+
+  defmodule Project do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:slug, :string)
+      field(:name, :string)
+      field(:directory, :string)
+      field(:repo_url, :string)
+      field(:workspace_root, :string)
+      field(:board_slug, :string)
+      field(:enabled, :boolean, default: true)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:slug, :name, :directory, :repo_url, :workspace_root, :board_slug, :enabled], empty_values: [])
     end
   end
 
@@ -249,7 +285,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field(:port, :integer)
+      field(:port, :integer, default: 4301)
       field(:host, :string, default: "127.0.0.1")
     end
 
@@ -265,12 +301,14 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:project, Project, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
+    field(:projects, {:array, :map}, default: [])
   end
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
@@ -288,6 +326,10 @@ defmodule SymphonyElixir.Config.Schema do
         {:error, {:invalid_workflow_config, format_errors(changeset)}}
     end
   end
+
+  @spec valid_project_slug?(term()) :: boolean()
+  def valid_project_slug?(slug) when is_binary(slug), do: String.match?(slug, @project_slug_pattern)
+  def valid_project_slug?(_slug), do: false
 
   @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
@@ -353,10 +395,11 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp changeset(attrs) do
     %__MODULE__{}
-    |> cast(attrs, [])
+    |> cast(attrs, [:projects])
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
+    |> cast_embed(:project, with: &Project.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
@@ -377,14 +420,53 @@ defmodule SymphonyElixir.Config.Schema do
       | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "symphony_workspaces"))
     }
 
+    project = normalize_project(settings.project, tracker.board_slug)
+    projects = normalize_projects(settings.projects, tracker.board_slug)
+
     codex = %{
       settings.codex
       | approval_policy: normalize_keys(settings.codex.approval_policy),
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    %{settings | tracker: tracker, workspace: workspace, project: project, projects: projects, codex: codex}
   end
+
+  defp normalize_project(project, fallback_board_slug) do
+    directory = resolve_optional_path_value(project.directory)
+    workspace_root = resolve_optional_path_value(project.workspace_root)
+    slug = normalize_optional_string(project.slug)
+    board_slug = normalize_optional_string(project.board_slug) || slug || fallback_board_slug || "default"
+
+    %{
+      project
+      | slug: slug,
+        directory: directory,
+        workspace_root: workspace_root,
+        board_slug: board_slug,
+        enabled: project.enabled != false
+    }
+  end
+
+  defp normalize_projects(projects, fallback_board_slug) when is_list(projects) do
+    projects
+    |> Enum.map(&project_from_map(&1, fallback_board_slug))
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_projects(_projects, _fallback_board_slug), do: []
+
+  defp project_from_map(project, fallback_board_slug) when is_map(project) do
+    %Project{}
+    |> Project.changeset(project)
+    |> apply_action(:validate)
+    |> case do
+      {:ok, parsed_project} -> normalize_project(parsed_project, fallback_board_slug)
+      {:error, _changeset} -> nil
+    end
+  end
+
+  defp project_from_map(_project, _fallback_board_slug), do: nil
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
@@ -397,6 +479,15 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_optional_map(nil), do: nil
   defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_optional_string(_value), do: nil
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
@@ -434,6 +525,10 @@ defmodule SymphonyElixir.Config.Schema do
         path
     end
   end
+
+  defp resolve_optional_path_value(nil), do: nil
+  defp resolve_optional_path_value(""), do: nil
+  defp resolve_optional_path_value(value) when is_binary(value), do: resolve_path_value(value, nil)
 
   defp resolve_env_value(value, fallback) when is_binary(value) do
     case env_reference_name(value) do

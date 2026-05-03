@@ -1,13 +1,18 @@
 # Symphony Elixir
 
-This directory contains the Elixir agent orchestration service that polls Linear, creates per-issue workspaces, and runs Codex in app-server mode.
+This directory contains the Elixir agent orchestration service that polls the configured tracker, creates per-card workspaces, and runs Codex in app-server mode.
+
+## Canonical Location
+
+- This project lives under `/Users/brooksswift/Coding/Smackdab/dev/symphony`.
+- When Brooks says `/dev`, `the dev folder`, or `inside dev`, that means `/Users/brooksswift/Coding/Smackdab/dev`.
+- Do not use `/Users/brooksswift/dev` for this project unless Brooks explicitly gives that exact absolute path.
 
 ## Environment
 
 - Elixir: `1.19.x` (OTP 28) via `mise`.
 - Install deps: `mix setup`.
 - Main quality gate: `make all` (format check, lint, coverage, dialyzer).
-
 
 ## Codebase-Specific Conventions
 

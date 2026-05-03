@@ -14,3 +14,7 @@ config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   secret_key_base: String.duplicate("s", 64),
   check_origin: false,
   server: false
+
+if config_env() == :test do
+  config :symphony_elixir, :disable_default_http_server, true
+end

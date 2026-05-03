@@ -37,8 +37,10 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
      operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
-     URL.
+   - For the local-board pilot, use one board per project. The board slug identifies the project
+     board, and the project config locks work to the intended repository/workspace.
+   - A card-level project slug is only a possible future global-intake routing aid; keep cards
+     simple for project-local boards.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
      issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
      Team Settings → Workflow in Linear.
@@ -88,13 +90,20 @@ Minimal example:
 ```md
 ---
 tracker:
-  kind: linear
-  project_slug: "..."
+  kind: local_board
+  board_slug: your-project-board
+project:
+  slug: your-project
+  name: Your Project
+  repo:
+    # Use directory for an existing checkout, or url for clone/populate.
+    url: git@github.com:your-org/your-project.git
+  workspace_root: ~/code/workspaces/your-project
 workspace:
-  root: ~/code/workspaces
+  root: ~/code/workspaces/your-project
 hooks:
   after_create: |
-    git clone git@github.com:your-org/your-repo.git .
+    git clone git@github.com:your-org/your-project.git .
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -102,7 +111,7 @@ codex:
   command: codex app-server
 ---
 
-You are working on a Linear issue {{ issue.identifier }}.
+You are working on a board card {{ issue.identifier }}.
 
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
@@ -110,6 +119,11 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
+- `local_board` is a tracker extension for project-local boards. The recommended model is one board
+  per project, with `tracker.board_slug` as the board identity and the `project` block as the
+  trusted repository/workspace scope.
+- Use either `project.repo.directory` for an existing local checkout or `project.repo.url` when the
+  workspace bootstrap should clone/populate the repo.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`
@@ -142,7 +156,7 @@ hooks:
   after_create: |
     git clone --depth 1 "$SOURCE_REPO_URL" .
 codex:
-  command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
+  command: '$CODEX_BIN --config ''model="gpt-5.5"'' app-server'
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
@@ -188,6 +202,7 @@ Optional environment variables:
 - `SYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
 
 `make e2e` runs two live scenarios:
+
 - one with a local worker
 - one with SSH workers
 

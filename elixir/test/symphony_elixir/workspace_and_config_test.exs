@@ -56,6 +56,88 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Path.basename(first_workspace) == "MT_Det"
   end
 
+  test "workspace path uses the card project workspace root and namespaces by project slug" do
+    default_workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-default-workspace-root-#{System.unique_integer([:positive])}"
+      )
+
+    project_workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-project-workspace-root-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: default_workspace_root)
+
+      issue =
+        %Issue{
+          id: "project-root-card",
+          identifier: "CARD/ROOT",
+          title: "Use project workspace root",
+          state: "Ready"
+        }
+        |> Map.put(:project, %{slug: "card-project", workspace_root: project_workspace_root})
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+
+      assert {:ok, expected_workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join([project_workspace_root, "card-project", "CARD_ROOT"]))
+
+      assert workspace == expected_workspace
+      assert File.dir?(workspace)
+      refute File.exists?(Path.join([default_workspace_root, "card-project", "CARD_ROOT"]))
+    after
+      File.rm_rf(default_workspace_root)
+      File.rm_rf(project_workspace_root)
+    end
+  end
+
+  test "workflow project config accepts and normalizes workspace root" do
+    workflow_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-config-project-workspace-root-#{System.unique_integer([:positive])}"
+      )
+
+    default_workspace_root = Path.join(workflow_root, "default-workspaces")
+    single_project_workspace_root = Path.join(workflow_root, "single-project-workspaces")
+    configured_project_workspace_root = Path.join(workflow_root, "configured-project-workspaces")
+
+    workflow = """
+    ---
+    tracker:
+      kind: local_board
+      database_url: "postgres://postgres:postgres@localhost:5431/symphony_board_test"
+      board_slug: "pilot"
+      active_states: ["Ready"]
+      terminal_states: ["Done"]
+    workspace:
+      root: "#{default_workspace_root}"
+    project:
+      slug: "pilot"
+      name: "Pilot Project"
+      directory: "#{Path.join(workflow_root, "pilot")}"
+      workspace_root: "#{single_project_workspace_root}"
+    projects:
+      - slug: "configured"
+        name: "Configured Project"
+        directory: "#{Path.join(workflow_root, "configured")}"
+        workspace_root: "#{configured_project_workspace_root}"
+    ---
+    Project-specific workspace roots are part of configured project context.
+    """
+
+    File.write!(Workflow.workflow_file_path(), workflow)
+
+    config = Config.settings!()
+
+    assert config.project.workspace_root == single_project_workspace_root
+    assert [%{slug: "configured", workspace_root: ^configured_project_workspace_root}] = config.projects
+  end
+
   test "workspace reuses existing issue directory without deleting local changes" do
     workspace_root =
       Path.join(
@@ -251,6 +333,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     after
       File.rm_rf(workspace_root)
     end
+  end
+
+  test "default server port exposes the service plan dashboard port" do
+    write_workflow_file!(Workflow.workflow_file_path(), server_port: nil)
+
+    assert Config.settings!().server.port == 4301
+    assert Config.server_port() == 4301
   end
 
   test "workspace removes all workspaces for a closed issue identifier" do

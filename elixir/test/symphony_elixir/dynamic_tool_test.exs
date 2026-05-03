@@ -3,23 +3,40 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   alias SymphonyElixir.Codex.DynamicTool
 
-  test "tool_specs advertises the linear_graphql input contract" do
-    assert [
-             %{
-               "description" => description,
-               "inputSchema" => %{
-                 "properties" => %{
-                   "query" => _,
-                   "variables" => _
-                 },
-                 "required" => ["query"],
-                 "type" => "object"
+  test "tool_specs advertises the dynamic tool input contracts" do
+    tool_specs = DynamicTool.tool_specs()
+
+    assert %{
+             "description" => description,
+             "inputSchema" => %{
+               "properties" => %{
+                 "query" => _,
+                 "variables" => _
                },
-               "name" => "linear_graphql"
-             }
-           ] = DynamicTool.tool_specs()
+               "required" => ["query"],
+               "type" => "object"
+             },
+             "name" => "linear_graphql"
+           } = Enum.find(tool_specs, &(&1["name"] == "linear_graphql"))
 
     assert description =~ "Linear"
+
+    assert %{
+             "description" => board_description,
+             "inputSchema" => %{
+               "properties" => %{
+                 "action" => _,
+                 "body" => _,
+                 "card_id" => _,
+                 "state" => _
+               },
+               "required" => ["action"],
+               "type" => "object"
+             },
+             "name" => "local_board"
+           } = Enum.find(tool_specs, &(&1["name"] == "local_board"))
+
+    assert board_description =~ "local Symphony board"
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -30,7 +47,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(response["output"]) == %{
              "error" => %{
                "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
-               "supportedTools" => ["linear_graphql"]
+               "supportedTools" => ["linear_graphql", "local_board"]
              }
            }
 
@@ -40,6 +57,138 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "text" => response["output"]
              }
            ]
+  end
+
+  test "local_board moves cards and adds comments through the board client" do
+    test_pid = self()
+
+    move_response =
+      DynamicTool.execute(
+        "local_board",
+        %{"action" => "move_card", "card_id" => "card-1", "state" => "Running"},
+        local_board_client: fn action, args ->
+          send(test_pid, {:local_board_client_called, action, args})
+          :ok
+        end
+      )
+
+    assert_received {:local_board_client_called, :move_card, %{"card_id" => "card-1", "state" => "Running"}}
+    assert move_response["success"] == true
+    assert Jason.decode!(move_response["output"]) == %{"ok" => true}
+
+    comment_response =
+      DynamicTool.execute(
+        "local_board",
+        %{"action" => "add_comment", "card_id" => "card-1", "body" => "## Codex Workpad\n- [x] planned"},
+        local_board_client: fn action, args ->
+          send(test_pid, {:local_board_client_called, action, args})
+          :ok
+        end
+      )
+
+    assert_received {:local_board_client_called, :add_comment, %{"body" => "## Codex Workpad\n- [x] planned", "card_id" => "card-1"}}
+    assert comment_response["success"] == true
+  end
+
+  test "local_board resolves project context from the card before moves and comments" do
+    test_pid = self()
+
+    move_response =
+      DynamicTool.execute(
+        "local_board",
+        %{"action" => "move_card", "card_id" => "card-project-b", "state" => "Running"},
+        local_board_client: fn action, args ->
+          send(test_pid, {:local_board_client_called, action, args})
+          :ok
+        end,
+        local_board_context_resolver: fn "card-project-b" ->
+          {:ok,
+           %{
+             board_slug: "project-b",
+             project: %{
+               slug: "project-b",
+               name: "Project B",
+               directory: "/tmp/project-b"
+             }
+           }}
+        end
+      )
+
+    assert move_response["success"] == true
+
+    assert_received {:local_board_client_called, :move_card,
+                     %{
+                       "card_id" => "card-project-b",
+                       "state" => "Running",
+                       "board_slug" => "project-b",
+                       "project" => %{
+                         slug: "project-b",
+                         name: "Project B",
+                         directory: "/tmp/project-b"
+                       }
+                     }}
+
+    comment_response =
+      DynamicTool.execute(
+        "local_board",
+        %{"action" => "add_comment", "card_id" => "card-project-b", "body" => "proof"},
+        local_board_client: fn action, args ->
+          send(test_pid, {:local_board_client_called, action, args})
+          :ok
+        end,
+        local_board_context_resolver: fn "card-project-b" ->
+          {:ok,
+           %{
+             board_slug: "project-b",
+             project: %{
+               slug: "project-b",
+               name: "Project B",
+               directory: "/tmp/project-b"
+             }
+           }}
+        end
+      )
+
+    assert comment_response["success"] == true
+
+    assert_received {:local_board_client_called, :add_comment,
+                     %{
+                       "body" => "proof",
+                       "card_id" => "card-project-b",
+                       "board_slug" => "project-b",
+                       "project" => %{
+                         slug: "project-b",
+                         name: "Project B",
+                         directory: "/tmp/project-b"
+                       }
+                     }}
+  end
+
+  test "local_board validates required action arguments" do
+    missing_state =
+      DynamicTool.execute(
+        "local_board",
+        %{"action" => "move_card", "card_id" => "card-1"},
+        local_board_client: fn _action, _args -> flunk("local board client should not be called") end
+      )
+
+    assert missing_state["success"] == false
+
+    assert Jason.decode!(missing_state["output"]) == %{
+             "error" => %{
+               "message" => "`local_board` move_card requires non-empty `card_id` and `state` strings."
+             }
+           }
+
+    unsupported =
+      DynamicTool.execute(
+        "local_board",
+        %{"action" => "delete_card", "card_id" => "card-1"},
+        local_board_client: fn _action, _args -> flunk("local board client should not be called") end
+      )
+
+    assert unsupported["success"] == false
+    assert Jason.decode!(unsupported["output"])["error"]["message"] =~ "Unsupported local board action"
   end
 
   test "linear_graphql returns successful GraphQL responses as tool text" do
